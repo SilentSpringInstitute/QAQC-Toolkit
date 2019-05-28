@@ -1,0 +1,523 @@
+---
+title: "Data wrangling: Getting acquainted"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+date: "`r paste(Sys.Date())`"
+---
+
+```{r 0. Table of contents, echo = FALSE}
+
+# 1. USER input 1: USER input required in order to run this code. 
+#                  Information about whether lab qualifier flags are present,
+#                  whether or not there are multiple analytic batches.
+
+# 2. Setup: Loads packages & set global options. Loads some user-defined 
+#           functions.
+
+# 3. Read in data
+
+# 4. USER input 2: Check that data are in correct format
+
+# 5. Set some plot features
+
+# 6. Examine qualifier flags 
+
+# 7. Examine reporting limits
+
+# 8. USER input 3: Prepare for trend plot, edit code to assign each
+# sample result a detect / estimated / non-detect flag
+
+# 9. Assess trends by anayltic batch
+
+# 10. Assess trends by sample run order
+
+# 11. Count up number of field and QC samples per analytic batch
+
+```
+
+```{r 1. USER input 1, echo = FALSE}
+
+##### USER Input 1A ------------------------------------------------------------
+# The following packages will be loaded below. 
+
+packs <- c("tidyverse", "knitr", "RColorBrewer", "pander", "ggforce")
+
+# If you have not previously installed these packages on your computer, 
+# you will need to do so before they can be loaded. This can be done by running
+# this code chunk and then typing:
+ 
+# install.packages(packs)
+
+# in the console. You can delete packages from this list if you
+# know that you already have them installed!
+
+##### USER Input 1B ------------------------------------------------------------
+# Specify what kind of QC data you actually have. 
+
+#ANYQC = do you have any qc data at all -- blanks, spikes or surrogates? 
+ANYQC <- TRUE
+
+# SPIKES = laboratory control spike recovery or matrix spike recovery data
+# provided by the lab
+SPIKES <- TRUE
+
+# SURRS = surrogate recovery data provided by the lab
+SURRS <- TRUE
+
+# BLANKS = results from any type of blank sample (field blanks, solvent blanks,
+# matrix blanks, etc.)
+BLANKS <- TRUE
+
+##### USER Input 1C ------------------------------------------------------------
+# If the data file is in the same folder as this Rmarkdown file, you can just
+# write the file name and extension (e.g. "samples.csv").
+# Alternatively, can specify full file path for each file. E.g.: 
+# "C:\Air Sampling\data analysis\data\R scraps\_bydate\2017-12\PAIRsamps.csv"
+samps.path <- ""
+spikes.path <- ""
+surrs.path <- ""
+blanks.path <- ""
+
+##### USER Input 1D ------------------------------------------------------------
+# Did the lab provide any data qualifier flags? Specify TRUE or FALSE. 
+QUAL <- TRUE
+
+##### USER Input 1E ------------------------------------------------------------
+# Specify TRUE or FALSE. If TRUE, plots will separate data by analytic
+# batch, as relevant. FALSE indicates only one analytic batch.
+MULTIBATCH <- TRUE
+
+##### USER Input 1F ------------------------------------------------------------
+### batch_order ###
+#A vector corresponding to batch names - replace with the actual batch names in
+# your data
+# If MULTIBATCH is FALSE, can ignore this section.
+if(MULTIBATCH) {
+  batch_order <- c("Batch 1", "Batch 2", "Batch 3")
+  }
+
+```
+
+```{r 2. Setup, echo = FALSE, message = FALSE}
+
+#message = FALSE in code chunk options suppresses messages about package loading
+
+# Load packages 
+library(tidyverse)
+library(knitr)
+library(RColorBrewer)
+library(ggforce)
+library(pander)
+
+#Effectively disable scientific notation
+options(scipen=999)
+
+# Define RL check function
+# RL check takes a dataframe and checks for multiple reporting limits per chemical 
+RLcheck <- function(data, RL, ...){
+  
+  #RL = the name of the column containing the reporting limit
+  #... = function will group data by any variables entered here
+  RL <- enquo(RL)
+  groups <- quos(...)
+  
+  data %>%
+    
+    group_by(!!!groups) %>%
+    summarize(num_rls = length(unique(!!RL)),
+              min_rl = min(!!RL),
+              max_rl = max(!!RL)) %>%
+    as.data.frame()
+}
+
+```
+
+```{r 3. Read in data, echo = FALSE, message = FALSE}
+
+#message = FALSE in chunk option supresses messages from read_csv about
+# how data are being parsed. Change to TRUE to see this info. 
+
+samples <- read_csv(samps.path)
+
+#specify whether or not we have these types of data in USER input 1 chunk
+if (SPIKES) {
+  spikes  <- read_csv(spikes.path)}
+
+if (SURRS) {
+   surrs <- read_csv(surrs.path)}
+
+if (BLANKS) {
+   blanks <- read_csv(blanks.path)}
+
+```
+
+```{r 4.USER input 2, echo = FALSE}
+
+# WHAT THIS CODE EXPECTS
+
+# 1. Data in long format, which means that:
+# - Chemical names are all in one column
+# - Chemical masses or concentrations are all in one column
+# - Each participant has one row of data per chemical & time point 
+# (if multiple time points)
+
+# So, for example, this would be an example of long data: 
+
+# FieldSampleID   Chemical  conc  
+# 123             chemA     0.5   
+# 123             chemB     3.6   
+# 123             chemZ     2.5   
+# 478             chemA     6     
+# 478             chemB     1.4   
+# 478             chemZ     0.1   
+
+# While this is an example of wide data:
+
+# FieldSampleID   chemA      chemB      chemZ      
+# 123             0.5        3.6        2.5   
+# 478             6          1.4        0.1  
+
+# 2. The following variables:
+# abbreviation = unique abbreviation for each compound (character)
+# conc = concentration of chemical measured in sample (numeric)
+# conc_units = concentration units (character)
+# LOQ = lab reporting limit (numeric)
+# sample_type = type of sample (field sample, duplicate, solvent blank, 
+# field blank, surrogate, matrix spike, etc.)
+# batch = lab analysis batch (character or numeric)
+# chem_order = order in which to plot chemicals (1:n)
+# lab_flag = qualifier flags supplied by lab (only if applicable)
+# run_order = order in which samples were analyzed (only if applicable)
+# lab_sample_id = unique sample identifier
+
+# Use dplyr 'rename' 
+# function to change variable names in your data (listed on righthand side)
+# to the variable names expected by the code (lefthand side).
+
+samples <-
+  samples %>%
+  rename(abbreviation = Abbreviation,
+         conc = conc,
+         conc_units = conc.units,
+         LOQ = LOQ,
+         sample_type = SampleType,
+         batch = LabBatch,
+         chem_order = Order,
+         lab_flag = Qual,
+         run_order = RunOrder,
+         lab_sample_id = LabSampleID)
+
+# For QC data (if you have any), in this code, just need the variables:
+# lab_sample_id, batch (if applicable) & sample_type
+# to take a quick look at how many samples you have. 
+
+if(ANYQC) {
+  #First make a code to represent each possible combination of data that a user
+  # might have
+  QC_code <-
+    case_when(BLANKS & SPIKES & SURRS ~ "1",
+              BLANKS & SPIKES & SURRS == FALSE ~ "2",
+              BLANKS & SPIKES == FALSE & SURRS ~ "3",
+              BLANKS & SPIKES == FALSE & SURRS == FALSE ~ "4",
+              BLANKS == FALSE & SPIKES & SURRS ~ "5",
+              BLANKS == FALSE & SPIKES == FALSE & SURRS ~ "6",
+              BLANKS == FALSE & SPIKES & SURRS == FALSE ~ "7")
+  
+  #Next, use that code to create a list of all the data available
+  QC <-
+    switch(QC_code,
+           "1" = list(blanks = blanks, spikes = spikes, surrs = surrs),
+           "2" = list(blanks = blanks, spikes = spikes),
+           "3" = list(blanks = blanks, surrs = surrs),
+           "4" = list(blanks = blanks),
+           "5" = list(spikes = spikes, surrs = surrs),
+           "6" = list(surrs = surrs),
+           "7" = list(spikes = spikes))
+  
+  if(MULTIBATCH) {
+    QC <-
+      QC %>%
+      map(., function(x)
+      x %>% rename(batch = LabBatch,
+                   lab_sample_id = LabSampleID,
+                   sample_type = SampleType))
+  } else {
+    QC <-
+      QC %>%
+      map(., function(x)
+      x %>% rename(lab_sample_id = LabSampleID,
+                   sample_type = SampleType))
+  }
+}
+
+  
+```
+
+```{r 5. Set some plot features, echo = FALSE}
+
+# Open circle for non-detects, open triangle for estimated detects, closed circle 
+# for detects
+det_shapes <- c(16,2,1)
+names(det_shapes) <- c("Detect","Estimated detect","Non-detect")
+
+# Can also be helpful to distinguish non-detects, estimated and true detects
+# by color
+det_colors <- c("#1b9e77", "#d95f02", "#7570b3")
+names(det_colors) <- c("Detect","Estimated detect","Non-detect")
+
+# Label batches so that they are numbered 1:n on plots
+if(MULTIBATCH) {
+  labels_batch <- 
+    seq(1:length(unique(batch_order))) } else {labels_batch <- c()}
+
+# Convert batch and abbreviation to factors for plotting
+samples <- within(samples, {
+    #set chem order for all plots
+  abbreviation_fac = factor(abbreviation, 
+           levels = unique(abbreviation[order(chem_order)]))
+        #orders factor levels from lowest to highest number batch
+  if(MULTIBATCH) {
+    batch_fac <- factor(batch, levels = batch_order, labels = labels_batch)}
+  })
+
+```
+
+# 0. Project Description
+
+**USER**: REPLACE THIS TEXT WITH PROJECT DESCRIPTION, INCLUDING FOR EXAMPLE:
+
+* name of study
+* study population
+* number of samples
+* any important take-aways from any previous data cleaning steps
+
+\newpage
+
+# 1: Sample Data Checks
+
+## Qualifier Flags
+
+Summarize any lab qualifier flags in your data:
+
+```{r 6. Examine qualifier flags, echo = FALSE}
+
+if(QUAL) {
+  pander(
+    samples %>% group_by(lab_flag) %>% count()
+    )
+}
+
+```
+
+**USER**: REPLACE THIS TEXT WITH LIST OF FLAG DEFINTIONS, OR ELSE 'NA' 
+
+\newpage
+
+## Reporting Limits
+
+Assess whether reporting limits are constant within a compound. 
+
+* If not, do they vary by analytic batch? Or by individual sample?
+* If reporting limits vary by sample within a compound, do samples with higher 
+detection limits have qualifier flags (e.g. flags indicating interference or 
+that dilution analysis was performed)? 
+
+```{r 7a. Examine reporting limits, echo = FALSE}
+
+pander(RLcheck(samples, LOQ, abbreviation))
+
+# Can add any additional grouping variable (e.g. batch or qualifier flag) to the
+# RLcheck function as needed. E.g., to add batch: 
+# RLcheck(samples, LOQ, abbreviation, batch)
+
+```
+
+
+\newline
+
+```{r 7b. Examine whether reporting limits vary with lab_flags, echo = FALSE}
+
+if(QUAL) {
+ pander(RLcheck(samples, LOQ, abbreviation, lab_flag))
+}
+
+```
+
+**USER**: REPLACE THIS TEXT WITH DESCRIPTION OF FINDINGS
+
+\newpage
+
+## Examine Data by Batch, Analysis Date and/or Run Order
+
+\newline
+
+```{r 8. USER input 3, echo = FALSE}
+
+samples <-
+  within(samples, {
+    #1. Add "detect" variable to identify detects, non-detects, and estimated detects (if appicable)
+    # This code works with the common situation where tha lab provides a "U"
+    # flag for non-detects. If non-detects are identified in some other manner,
+    # the code will need to be modified.
+    detect = case_when(grepl("U", lab_flag) ~ "Non-detect", 
+                       conc <= LOQ ~ "Estimated detect",
+                       conc > LOQ ~ "Detect")
+    #2 set non-detects to 1/2 lab reporting limit (i.e. 1/2 LOQ) for plotting 
+    conc_repl = ifelse(detect == "Non-detect", LOQ/2, conc)
+  })
+
+```
+
+```{r 9. Assess trends by batch, echo = FALSE, fig.height = 10, fig.width = 10}
+
+#note -- change fig.height and fig.width as needed!
+
+#note 2 -- can consider geom_sina from the ggforce package as an alternative
+# to geom_point used in the code below. To do this, replace 'geom_point' with
+# 'geom_sina' and delete the code setting position to position_jitter. 
+# From the documentation, geom_sina will produce an enhanced jitter strip chart, 
+# where the width of the jitter is controlled by the density distribution of the 
+# data within each class.
+
+#note 3 -- can also experiment with whether the visualization is more 
+# meaningful/ interpretable when detection status varies by color vs. 
+# by shape. Currently set to vary by color but can change this
+# by changing "color = detect" to "shape = detect" and replacing 
+# "scale_color_manual" code with "scale_shape_manual" line.
+# 
+if(MULTIBATCH) {
+  
+  ggplot(samples) +
+    geom_point(
+    aes(x = batch_fac, y = conc_repl, color = detect),
+    size = 2,
+    position = position_jitter(w = 0.1, h = 0)
+    ) +
+    
+    scale_color_manual(values = det_colors) +
+    # scale_shape_manual(values = det_shapes) +
+
+    # If distribution at low concentrations is obscured by one or few samples with higher levels,
+    # could try putting on log scale -- uncomment the code below:
+    scale_y_log10() +
+    
+    # Note that if you have negative estimated values in your data you will
+    # not be able to plot those values on log scale (will et a message about
+    # missing data. 
+    
+    ##Aesthetics
+    theme_classic() +
+    theme(panel.border = element_rect(
+    linetype = "solid",
+    colour = "black",
+    fill = NA
+    )) +
+    
+    guides(color = guide_legend(title = "Detection Status")) +
+    
+    facet_wrap( ~ abbreviation_fac, scales = "free_y") +
+    xlab("Batch") +
+    ylab(paste0("Concentration (", unique(samples$conc_units), ")")) +
+    ggtitle("Examine batch trends")
+} 
+
+```
+
+**USER**: REPLACE THIS TEXT WITH DESCRIPTION OF FINDINGS
+* Are there any unexpected trends/clustering in results or in detection limits?
+* If yes, discuss with lab. 
+
+```{r 10. Assess trends by run order, echo = FALSE, fig.height = 10, fig.width = 10}
+
+#note -- change fig.height and fig.width as needed!
+
+#note 2 -- can also experiment with whether the visualization is more 
+# meaningful/ interpretable when detection status varies by color vs. 
+# by shape. Currently set to vary by color but can change this
+# by changing "color = detect" to "shape = detect" and replacing 
+# "scale_color_manual" code with "scale_shape_manual" line.
+
+ggplot(samples) +
+    geom_point(
+    aes(x = run_order, y = conc_repl, color = detect),
+    size = 2,
+    position = position_jitter(w = 0.1, h = 0)
+    ) +
+    
+    scale_color_manual(values = det_colors) +
+    # scale_shape_manual(values = det_shapes) +
+
+    # If distribution at low concentrations is obscured by one or few samples with higher levels,
+    # could try putting on log scale -- uncomment the code below:
+    scale_y_log10() +
+    
+    # Note that if you have negative estimated values in your data you will
+    # not be able to plot those values on log scale (will et a message about
+    # missing data. 
+    
+    ##Aesthetics
+    theme_classic() +
+    theme(panel.border = element_rect(
+    linetype = "solid",
+    colour = "black",
+    fill = NA
+    )) +
+    
+    guides(color = guide_legend(title = "Detection Status")) +
+    
+    facet_wrap( ~ abbreviation_fac, scales = "free_y") +
+    xlab("Run Order") +
+    ylab(paste0("Concentration (", unique(samples$conc_units), ")")) +
+    ggtitle("Examine run order trends")
+  
+
+```
+
+**USER**: REPLACE THIS TEXT WITH DESCRIPTION OF FINDINGS
+
+* Are there any unexpected trends/clustering in results or in detection limits?
+* If yes, discuss with lab. 
+
+\newpage
+
+# 3: Summarize number of field and QC samples (per batch, if applicable) 
+
+```{r 11. Summary count, echo = FALSE}
+
+if(ANYQC) {
+  if(MULTIBATCH) {
+      
+      all <-
+        c(QC, list(samples = samples)) %>%
+        map(., select, lab_sample_id, batch, sample_type)
+      
+      all_count <-
+        bind_rows(all) %>%
+        unique() %>%
+        count(., batch, sample_type) %>%
+        spread(., batch, n)
+      
+      pander(all_count)
+      
+  } else {
+    
+    all <-
+        c(QC, list(samples = samples)) %>%
+        map(., select, lab_sample_id, sample_type)
+      
+      all_count <-
+        bind_rows(all) %>%
+        unique() %>%
+        count(., sample_type)
+      
+      pander(all_count)
+      }
+  }
+
+```
+
+* Do you have results for the expected number of samples? If not, investigate
+ any extra or missing by comparing samples on chain of custody you sent to the lab
+ to the sample results received from the lab.
